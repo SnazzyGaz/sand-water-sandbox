@@ -1,6 +1,6 @@
 # Sand / Water
 
-A browser-playable, inland sand quarry: sculpt dunes, feed a perched basin, and watch water infiltrate, find a route downhill, cut the sand and leave sediment behind. Built with vanilla Three.js, Vite and an independent CPU physics worker. No image assets, videos, copied research implementations or runtime network services.
+A browser-playable, inland sand quarry: sculpt dunes, feed a perched basin, and watch water infiltrate, find a route downhill, cut the sand and leave sediment behind. Built with vanilla Three.js, Vite and an independent CPU physics worker. CC0 photographic sand and HDR daylight assets ship locally; no videos, copied research implementations or runtime network services.
 
 **Credit: Garyck Arntzen — [@_mintydoge](https://x.com/_mintydoge).**
 
@@ -24,7 +24,7 @@ npm run test:browser        # with the dev server already running
 # or BASE_URL=http://localhost:4173 npm run test:browser against preview
 ```
 
-The optional browser test uses Playwright and an installed `/usr/bin/google-chrome`, or `CHROME_PATH=/path/to/chrome`. If neither exists, install Playwright's browser separately with `npx playwright install chromium`. It exercises WebGL shader compilation, worker startup, pause, local water painting, the large pour, diagnostic views, keyboard modes, orbit and zoom. It creates **no screenshots or videos**. Its software WebGL renderer is a compatibility check, **not a hardware frame-rate benchmark**.
+The optional browser test uses Playwright and an installed `/usr/bin/google-chrome`, or `CHROME_PATH=/path/to/chrome`. If neither exists, install Playwright's browser separately with `npx playwright install chromium`. It exercises WebGL shader compilation, worker startup, pause, local water painting, the large pour, diagnostic views, keyboard modes, orbit and zoom. It creates **no screenshots or videos by default** (`SCREENSHOT=path.png` optionally saves a QA still). Its software WebGL renderer is a compatibility check, **not a hardware frame-rate benchmark**.
 
 ## Controls
 
@@ -83,25 +83,28 @@ Sand sculpting edits **hs**, never H. There is also a conservative suspended-sed
 
 The outer step is bounded by 1/45 s, a wave/velocity CFL estimate using `sqrt(g hw)` and measured component speeds, and a softened-elastic wave bound. Sand uses dt/3. Additional safety: water face transport is capped at 4 m/s per outgoing face, reconstructed water velocity at ±4 m/s per component, sand at ±5 m/s, deformation eigenvalues are limited, water painting is limited to 8 m local depth, and sculpted surface height to 16 m. These are real limitations, not claims of an unconditionally accurate solver. New pours update the CFL depth bound immediately.
 
-The solver uses preallocated `Float32Array`s on the **CPU in a dedicated Web Worker**, not a GPU ping-pong solver. The worker sends transferable packed snapshots to the renderer; the main thread only uploads fields and handles interaction. It limits catch-up work rather than taking unsafe giant steps after a stall. The HUD displays achieved simulation-time/wall-time ratio: **slow machines may advance below 1×**, while the camera remains separate from physics. GPU rendering uses float height textures and vertex displacement, with finite-difference field normals; physics resolution is never reduced by adaptive screen resolution.
+The solver uses preallocated `Float32Array`s on the **CPU in a dedicated Web Worker**, not a GPU ping-pong solver. The worker sends planar packed snapshots at up to 30 Hz through a single, backpressured, transferable buffer (transferred in **both** directions, not structured-cloned on return); the main thread only uploads fields and handles interaction. It limits catch-up work rather than taking unsafe giant steps after a stall. The HUD displays achieved simulation-time/wall-time ratio: **slow machines may advance below 1×**, while the camera remains separate from physics. GPU rendering uses float height textures and vertex displacement, with finite-difference field normals; physics stays 192², and canvas pixel ratio stays `min(devicePixelRatio, 2)` regardless of frame rate. Exact-zero water cells skip outgoing transport; dry below-yield sand columns use the exact stationary Coulomb solution. Sand transport and plasticity use moving columns plus a neighbour halo, while the force/yield test still covers **every** column on **all three** substeps. New brush-made slope failures are never frozen out. No mass threshold discards thin films or pore water.
 
 ## What is actually shaded
 
-- Procedural sand grain-scale albedo and normal variation, restrained dune ripples, broad rough diffuse lighting, GGX-like glancing specular and sparse view-dependent grain glitter inspired by Journey. No downloaded textures.
-- Sand darkens with moisture and changes roughness from dry (0.92) toward wet (0.29). Moisture history decays slowly so newly drained sand does not instantly turn pale.
-- Directional sun with cool sky fill, height-field ray-marched terrain self-shadowing evaluated at vertices, and a local cavity occlusion estimate. No claim of full path tracing or accurate multiple scattering.
-- The water mesh follows the **simulated** water surface; dry cells are culled and the shore fades at millimetre-scale depths. Refraction samples the sand scene color, tinted by depth-dependent absorption. Suspended sediment changes turbidity. Fresnel sky reflection, sun highlights and velocity-advected fine normal ripples make the surface readable. The latter are shading detail, not extra simulated waves.
-- Terrain color and depth render once into an offscreen target; both are copied to the screen before water is drawn, so distant hills correctly occlude pools without rendering all terrain twice. Cutaway sand sides and a restrained base make the domain visible.
-- ACES tone mapping; no bloom, cinematic video, external media or web fonts. Adaptive pixel ratio falls on slow graphics devices (to 0.65 minimum); simulation stays 192².
+- Poly Haven **Sand 01** CC0 photographic diffuse and OpenGL normal maps, at their measured **1.5 m** tile width, with mipmaps and anisotropic filtering. Additional original millimetre-scale grain normals and sparse grazing glints; low-amplitude, physically sampled initial quarry relief.
+- Sand darkens to roughly 27–32% of its dry linear albedo when wet; roughness changes from 0.86 dry to 0.20 wet. Moisture history decays slowly after drainage.
+- A lower directional sun and cool sky fill. Field normals and 12-tap terrain self-shadows are cached in a 192² GPU texture on snapshots, not recomputed in every terrain vertex on every display frame. Normals are interpolated per pixel.
+- The water mesh follows the **simulated** surface. Screen-space refraction uses view-space normals; optical path length controls absorption, and suspended sediment increases turbidity. A local **CC0 HDR daylight environment** provides real cloud reflections. Its photographed sun is aligned with the direct light. An eight-step height-field ray query reflects nearby evolving banks, with sky on misses. This is approximate, not full ray tracing.
+- Small, irregular-direction capillary/wind **normal detail only**, replacing the old coarse checkerboard ripples. Millimetre-depth shoreline fade, a dark meniscus and a little velocity-dependent contact foam, without splashes or invented breaking waves.
+- Terrain color/depth render once into an offscreen target and are copied before water; no terrain rerender for refraction. ACES exposure 0.90; no bloom, video or web fonts. A closer, steeper default camera puts the quarry in the foreground.
+- Canvas stays at native device pixel ratio, capped at **2**, with **no adaptive downscaling**. HUD names software WebGL when detected. Diagnostics distinguish CPU draw submission from asynchronous GPU timer results (`renderGpuMs`, where supported).
+
+Assets, source URLs and CC0 terms: [`public/textures/LICENSE.txt`](public/textures/LICENSE.txt).
 
 ## Verification from this build
 
-- `npm install`: succeeded; dependency audit reported zero vulnerabilities.
-- `npm run build`: succeeded.
-- `npm test`: **10/10 passing**, including a lake-at-rest check, water/solid balance, infiltration, lateral pore seepage, a dry/moist/saturated slope comparison, reverse sand-to-water drag, pure-rotation stretch preservation and real erosion/deposition.
-- Headless Chromium WebGL smoke tests against **both Vite dev and the production preview build**: passed with **zero JavaScript / shader console errors**; pause froze simulated time, painting added water, the large pour added at least 44 m³ (nominally 45), and keyboard/orbit/zoom paths ran.
-- Final 192² CPU benchmark: **1,500 water steps / 4,500 sand steps**, **32.25 simulated seconds**, **20.19 ms per water step** on this execution host. At that point: **7.53 m³ cumulatively eroded**, **6.45 m³ deposited**, **78.11 m³ discharged**, and **0.747 m maximum terrain change**. Water balance error was approximately **−0.000002 m³**, and solid balance error **+0.0000004 m³**. This validates accounting/stability in this scenario, **not real-soil accuracy**.
-- The browser test deliberately used SwiftShader/software WebGL and reached roughly **10–16 fps with adaptive resolution**, not real-time hardware rendering. No GPU-hardware fps claim is made. Hardware acceleration is recommended.
+- `npm test`: **13/13 passing**. The original ten tests remain; new tests cover planar snapshot equivalence, sparse transport discovering a newly sculpted failure while conserving sand/pore water, and exact stationary deformation.
+- `npm run build`: successful; Pages uses `BASE=/sand-water-sandbox/ npm run build`.
+- `npm run test:browser`: dev and Pages-prefixed production preview both passed with zero JavaScript/shader errors. The isolated headless browser covers pause, painting, large pour, modes, orbit and zoom; no signed-in sessions are attached to. For Pages preview, run `BASE=/sand-water-sandbox/ npm run preview -- --port 5175`, then `BASE_URL=http://127.0.0.1:5175/sand-water-sandbox/ npm run test:browser`.
+- Same-box 192² Node benchmark, 500 water steps / 1,500 sand substeps: original **20.46 ms/step**, optimized **5.76 ms/step** (about **3.6× faster**). Final run advanced **10.167 simulated seconds in 2.878 wall seconds**. Water accounting error **+0.00000244 m³**, solid error **+0.000000121 m³**. These validate this scenario's stability/accounting, not calibrated soil accuracy.
+- `npm run test:performance`: a separate sustained browser measurement at **1440 × 900, DPR 1**, including a large pour, measured **1.008× simulated/wall time** over **12.276 s**. Canvas remained **1440 × 900**. Rendering was only **3.23 fps** with **600 ms p95 frame time** on **SwiftShader software WebGL**; a sampled GPU timer reported **296.9 ms**. This box has **no hardware GPU device**, so these are **not** native-GPU results. A 30–60 fps hardware target remains **unverified**, not certified or claimed achieved.
+- Reproduce using `SOFTWARE=0 DPR=2 npm run test:performance` on a hardware-accelerated test computer. Set `BASE_URL` for a production preview or hosted build; `REPORT=path.json` saves raw diagnostics. `renderSubmitMs` is not GPU execution time.
 
 ## Known limits / next improvements
 
@@ -112,7 +115,7 @@ This is an original **interactive research-inspired approximation**, not a valid
 - Internal sand elasticity/plasticity is softened and simplified; cohesion is visually tuned, and includes an additional finite-depth yield term. There is no full MPM, calibrated grain-size rheology, dilatancy or exact stress/energy conservation.
 - The pore layer is a vertically averaged reservoir with Darcy/capillary flow, not a full Richards-equation unsaturated soil model. Underdrain is a sink into a conceptual deep aquifer, not a simulated underground volume. No evaporation water loss; visual surface moisture alone dries slowly.
 - Suspended sediment is a capacity-based scalar. It has no independently resolved settling velocity, grain-size distribution or three-dimensional particle-laden flow.
-- Refraction is a screen-space approximation with analytical sky reflection, not ray-traced caustics or exact terrain reflection. Small tributaries and very thin films are limited by the grid. Grain ripples are not transported bedforms.
+- Refraction is screen-space; HDR sky and coarse height-field bank reflections are approximations, not ray-traced caustics or exact terrain reflection. Small tributaries and very thin films are limited by the grid. Grain ripples are not transported bedforms.
 - Software WebGL is visibly slower than hardware acceleration. CPU simulation can fall behind real time under heavy editing. The time ratio is visible rather than silently pretending to run in real time.
 - Priorities next: GPU solver with well-balanced finite-volume SWE, better wet/dry fronts and momentum transport; exact paper return mapping and stress calibration; vertical pore profiles and seepage erosion; higher-resolution adaptive channels; measured-soil validation; terrain-aware refractive ray marching and temporal antialiasing.
 
@@ -120,14 +123,16 @@ This is an original **interactive research-inspired approximation**, not a valid
 
 ```text
 index.html                 accessible minimal tools / status / control legend
-src/main.js                input, HUD, worker connection, adaptive render resolution
+src/main.js                input, HUD, worker connection, full-resolution diagnostics
 src/simulation.js          four fields, flow, seepage, sand stress, drag, erosion
 src/worker.js              split integration scheduling and transferable snapshots
 src/rendering.js           Three.js scene, field shaders, refraction, picking
 src/style.css              responsive minimal HUD (system-font fallbacks)
 tests/simulation.test.js    mass, seepage, cohesion, drag, rotation, erosion tests
 tests/benchmark.js          CPU timing and mass balance
-tests/browser-smoke.js      no-media browser integration / shader test
+tests/browser-smoke.js      browser integration / shader test
+tests/browser-performance.js sustained fps, sim/wall ratio and native-DPR check
+public/textures/           CC0 sand and daylight environment assets
 package.json               dev / build / preview / test scripts
 vite.config.js             separate cached Three.js / navigation chunks
 ```

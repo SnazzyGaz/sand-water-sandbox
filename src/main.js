@@ -28,7 +28,7 @@ try {
   function updateRadius(){radius=+$('radius').value;$('radius-value').textContent=`${radius.toFixed(1)} m`;updateBrush();}
   $('radius').oninput=updateRadius;
   $('strength').oninput=()=>{strength=+$('strength').value/100;$('strength-value').textContent=`${Math.round(strength*100)}%`;updateBrush();};
-  function setPaused(p){paused=p;$('pause').innerHTML=p?'Resume <kbd>Space</kbd>':'Pause <kbd>Space</kbd>';$('live').textContent=p?'SIMULATION PAUSED':'COUPLED SIMULATION';post({type:'pause',paused});updateBrush();}
+  function setPaused(p){paused=p;lastTime=stats.time||0;lastSimWall=performance.now();$('pause').innerHTML=p?'Resume <kbd>Space</kbd>':'Pause <kbd>Space</kbd>';$('live').textContent=p?'SIMULATION PAUSED':'COUPLED SIMULATION';post({type:'pause',paused});updateBrush();}
   $('pause').onclick=()=>setPaused(!paused);
   $('reset').onclick=()=>{down=false;hit=null;post({type:'brush',brush:null});post({type:'reset'});};
   $('camera').onclick=()=>display.frameScene();
@@ -66,23 +66,23 @@ try {
   window.addEventListener('resize',()=>display.resize());
   worker.onerror=e=>showError(`Simulation could not start: ${e.message}. Try a current WebGL2-capable desktop browser.`);
   worker.onmessage=({data:m})=>{
-    if(m.type!=='frame')return;const a=new Float32Array(m.buffer);display.update(a);post({type:'recycle',buffer:m.buffer});ready=true;
-    stats=m.stats;if(stats.time<lastTime){lastTime=stats.time;lastSimWall=performance.now();}lastCost=m.cost||lastCost;
+    if(m.type!=='frame')return;const wasReady=ready;const a=new Float32Array(m.buffer);display.update(a);worker.postMessage({type:'recycle',buffer:m.buffer},[m.buffer]);ready=true;
+    stats=m.stats;if(!wasReady||stats.time<lastTime){lastTime=stats.time;lastSimWall=performance.now();}lastCost=m.cost||lastCost;
     const now=performance.now();if(now-lastSimWall>1000){simRate=(stats.time-lastTime)/((now-lastSimWall)/1000);lastTime=stats.time;lastSimWall=now;}
   };
   function animate(now){
     requestAnimationFrame(animate);frames++;
-    if(now-lastFPS>750){fps=Math.round(frames*1000/(now-lastFPS));frames=0;lastFPS=now;if(fps<28&&now>2500){const ratio=display.renderer.getPixelRatio();if(ratio>.65){display.renderer.setPixelRatio(Math.max(.65,ratio*.82));display.resize();}}}
+    if(now-lastFPS>750){fps=Math.round(frames*1000/(now-lastFPS));frames=0;lastFPS=now;}
     if(pointer&&now-lastProbe>80){hit=display.pick(pointer.x,pointer.y);updateBrush();lastProbe=now;
       if(hit){const state=hit.saturation>.86?'SATURATED / LOW COHESION':hit.saturation>.08?'MOIST / CAPILLARY COHESION':hit.wet>.2?'DAMP SURFACE':'DRY / FRICTIONAL SAND';$('probe-state').textContent=state;$('probe-values').textContent=`${Math.round(hit.saturation*100)}% pore saturation · ${hit.water.toFixed(2)} m water · ${hit.speed.toFixed(2)} m/s`;}
       if(paused&&down&&hit)post({type:'edit',brush:{...hit,radius,strength,mode:activeMode()}});
     }
     if(now-lastStats>350 && ready){
       $('water-stat').textContent=`${stats.surface.toFixed(1)} m³`;$('pore-stat').textContent=`${stats.pore.toFixed(1)} m³`;$('drained-stat').textContent=`${stats.drained.toFixed(1)} m³`;$('eroded-stat').textContent=`${stats.eroded.toFixed(2)} m³`;
-      $('performance').textContent=`192² · CPU worker · ${fps} fps · ${paused?'paused':simRate.toFixed(2)+'× time'} · ${stats.time.toFixed(1)} s`;
+      $('performance').textContent=`192² physics · sparse CPU worker · ${fps} fps · ${paused?'paused':simRate.toFixed(2)+'× time'} · ${stats.time.toFixed(1)} s${display.software?' · SOFTWARE WebGL':''}`;
       lastStats=now;
       // A read-only diagnostic for browser smoke tests and local experiments.
-      window.sandboxDiagnostics={...stats,fps,simRate,solverMs:lastCost,ready,paused,mode};
+      window.sandboxDiagnostics={...stats,fps,simRate,solverMs:lastCost,pixelRatio:display.renderer.getPixelRatio(),renderer:display.gpuName,renderSubmitMs:display.renderMs,renderGpuMs:display.renderGpuMs,ready,paused,mode};
     }
     display.render(stats.time||0);
   }

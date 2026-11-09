@@ -7,6 +7,7 @@ const errors=[];page.on('pageerror',e=>errors.push(e.message));page.on('console'
 await page.goto(process.env.BASE_URL||'http://localhost:5173/');
 await page.waitForFunction(()=>window.sandboxDiagnostics?.ready,{timeout:30000});
 await page.waitForTimeout(2200);
+if(process.env.SCREENSHOT)await page.screenshot({path:process.env.SCREENSHOT});
 console.log('initial',await page.evaluate(()=>window.sandboxDiagnostics));
 await page.click('#pause');await page.waitForFunction(()=>window.sandboxDiagnostics.paused);
 console.log('paused',await page.evaluate(()=>window.sandboxDiagnostics));const frozen=await page.evaluate(()=>window.sandboxDiagnostics.time);await page.waitForTimeout(300);assert.equal(await page.evaluate(()=>window.sandboxDiagnostics.time),frozen);

@@ -1,0 +1,13 @@
+Photographic material: Sand 01, Poly Haven
+https://polyhaven.com/a/sand_01
+sand-color.jpg: original 2k diffuse JPEG
+sand-normal.jpg: original 2k OpenGL normal JPEG
+Physical tile width: 1.5 metres
+
+HDR daylight environment: Kloofendal 48d Partly Cloudy, Poly Haven
+https://polyhaven.com/a/kloofendal_48d_partly_cloudy
+quarry-sky.hdr: original 1k HDR
+
+Both assets are released under CC0 1.0 (public domain):
+https://creativecommons.org/publicdomain/zero/1.0/
+https://polyhaven.com/license

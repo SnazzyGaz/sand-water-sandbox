@@ -2,6 +2,10 @@
 // departures from Su et al. This module has no browser or rendering dependencies.
 export const G = 9.81;
 export const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+// Seeded continuous relief, sampled at the *physics* resolution. Material grain
+// is a separate shading detail and never masquerades as simulated geometry.
+const terrainHash=(x,y)=>{let h=Math.imul(x,374761393)^Math.imul(y,668265263);h=Math.imul(h^(h>>>13),1274126177);return ((h^(h>>>16))>>>0)/4294967296;};
+function reliefNoise(x,y){const X=Math.floor(x),Y=Math.floor(y);let u=x-X,v=y-Y;u=u*u*(3-2*u);v=v*v*(3-2*v);const a=terrainHash(X,Y),b=terrainHash(X+1,Y),c=terrainHash(X,Y+1),d=terrainHash(X+1,Y+1);return (a+(b-a)*u)*(1-v)+(c+(d-c)*u)*v-.5;}
 const rho = 1.65; // bulk sand / water density
 export function cohesion(phi) {
   if (phi < 0.2) return 4.5 * Math.max(0, phi) / 0.2;
@@ -18,6 +22,7 @@ export class Simulation {
     this.flux = new Float32Array(this.count * 4);
     this.poreFlux = new Float32Array(this.count * 4);
     this.sandFlux = new Float32Array(this.count * 4);
+    this.activeSand=new Int32Array(this.count);this.sandMask=new Uint8Array(this.count);
     this.neighbors = new Int32Array(this.count * 4);
     for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
       const i = y*n+x, k = i*4;
@@ -48,6 +53,7 @@ export class Simulation {
       h-=0.9*gauss(X,Z,0,-19,5,4.6);
       // A narrow, initially shallow outlet guides the first flow, not a baked channel animation.
       h-=.42*gauss(X,Z,1,-9,1.7,7);
+      h+=.12*reliefNoise(X*.55,Z*.55)+.045*reliefNoise(X*1.6+41,Z*1.6)+.018*reliefNoise(X*2.6,Z*2.6+27);
       this.sand[i]=Math.max(.22,h);
       const b=this.H[i]+this.sand[i];
       if (Math.abs(X)<7 && Z<-11 && Z>-25) {
@@ -106,26 +112,26 @@ export class Simulation {
     for(let s=0;s<3;s++)this.sandStep(dt/3);
     this.erode(dt);
     this.time+=dt;
-    let maxV=0,maxH=0;
+    let maxV=0,maxH=0;const drying=Math.exp(-dt*.016);
     for(let i=0;i<this.count;i++){
       const h=this.sand[i], excess=Math.max(0,this.pore[i]-.5*h);
       this.pore[i]-=excess;this.water[i]+=excess;
       const sat=this.pore[i]/(.5*h+.0001);
-      this.wet[i]=Math.max(this.wet[i]*Math.exp(-dt*.016),Math.min(1,sat*1.8),Math.min(1,this.water[i]*25));
+      this.wet[i]=Math.max(this.wet[i]*drying,Math.min(1,sat*1.8),Math.min(1,this.water[i]*25));
       maxV=Math.max(maxV,Math.abs(this.u[i]),Math.abs(this.v[i]),Math.abs(this.su[i]),Math.abs(this.sv[i]));
       maxH=Math.max(maxH,this.water[i]);
     }
     this.maxSpeed=maxV;this.maxDepth=maxH;
   }
   infiltrate(dt){
-    const area=this.dx*this.dx;
+    const area=this.dx*this.dx, drainage=1-Math.exp(-dt*.009);
     for(let i=0;i<this.count;i++){
       const cap=.5*this.sand[i], free=Math.max(0,cap-this.pore[i]);
       const amount=Math.min(this.water[i],free,dt*.095*(.25+free/(cap+.001))*(1+this.water[i]));
       // Momentum follows water as it switches layers.
       if(amount>0){ const p=this.pore[i];this.pu[i]=(this.pu[i]*p+this.u[i]*amount)/(p+amount);this.pv[i]=(this.pv[i]*p+this.v[i]*amount)/(p+amount); }
       this.water[i]-=amount;this.pore[i]+=amount;
-      if(this.options.underdrain){const d=this.pore[i]*(1-Math.exp(-dt*.009));this.pore[i]-=d;this.drained+=d*area;}
+      if(this.options.underdrain){const d=this.pore[i]*drainage;this.pore[i]-=d;this.drained+=d*area;}
     }
   }
   surfaceFlow(dt){
@@ -137,7 +143,8 @@ export class Simulation {
       this.tmpU[i]=this.sample(this.u,bx,bz)-this.u[i];this.tmpV[i]=this.sample(this.v,bx,bz)-this.v[i];
     }
     for(let i=0;i<N;i++){
-      const b=H[i]+h[i], eta=b+w[i], k=i*4;let sum=0;
+      const k=i*4;if(w[i]===0){f[k]=f[k+1]=f[k+2]=f[k+3]=0;continue;}
+      const b=H[i]+h[i], eta=b+w[i];let sum=0;
       for(let d=0;d<4;d++){
         const j=nb[k+d];let q=0;
         if(j<0)q=w[i]*Math.sqrt(G*w[i])*.75;
@@ -155,7 +162,13 @@ export class Simulation {
       for(let d=0;d<4;d++)f[k+d]*=scale;
     }
     for(let i=0;i<N;i++){
-      const k=i*4, conc=sed[i]/Math.max(w[i],1e-12);let wi=w[i],si=sed[i];
+      const k=i*4;
+      if(w[i]===0 && sed[i]===0 &&
+         (nb[k]<0||f[nb[k]*4+1]===0) && (nb[k+1]<0||f[nb[k+1]*4]===0) &&
+         (nb[k+2]<0||f[nb[k+2]*4+3]===0) && (nb[k+3]<0||f[nb[k+3]*4+2]===0)){
+        this.nextWater[i]=this.nextSediment[i]=this.u[i]=this.v[i]=0;continue;
+      }
+      const conc=sed[i]/Math.max(w[i],1e-12);let wi=w[i],si=sed[i];
       let inL=0,inR=0,inT=0,inB=0;
       for(let d=0;d<4;d++){
         const j=nb[k+d],out=c*f[k+d];wi-=out;si-=out*conc;
@@ -172,7 +185,8 @@ export class Simulation {
   seep(dt){
     const {count:N,neighbors:nb,pore:p,H,sand:h,poreFlux:f,dx}=this,c=dt/dx;
     for(let i=0;i<N;i++){
-      const k=i*4, sat=p[i]/(.5*h[i]+.0001), head=H[i]+2*p[i]-.22*(1-sat);let sum=0;
+      const k=i*4;if(p[i]===0){f[k]=f[k+1]=f[k+2]=f[k+3]=0;continue;}
+      const sat=p[i]/(.5*h[i]+.0001), head=H[i]+2*p[i]-.22*(1-sat);let sum=0;
       for(let d=0;d<4;d++){
         const j=nb[k+d];let q=0;
         if(j<0)q=.035*p[i];
@@ -186,7 +200,13 @@ export class Simulation {
       const scale=Math.min(1,p[i]/(c*sum+1e-20));for(let d=0;d<4;d++)f[k+d]*=scale;
     }
     for(let i=0;i<N;i++){
-      const k=i*4;let value=p[i],px=0,pz=0;
+      const k=i*4;
+      if(p[i]===0 &&
+         (nb[k]<0||f[nb[k]*4+1]===0) && (nb[k+1]<0||f[nb[k+1]*4]===0) &&
+         (nb[k+2]<0||f[nb[k+2]*4+3]===0) && (nb[k+3]<0||f[nb[k+3]*4+2]===0)){
+        this.nextPore[i]=this.pu[i]=this.pv[i]=0;continue;
+      }
+      let value=p[i],px=0,pz=0;
       for(let d=0;d<4;d++){
         const j=nb[k+d],out=c*f[k+d];value-=out;
         const inc=j<0?0:f[j*4+(d^1)];value+=c*inc;
@@ -200,7 +220,7 @@ export class Simulation {
   }
   sandStep(dt){
     const {n,count:N,dx,H,sand:h,water:w,pore:p,su,sv,neighbors:nb,sandFlux:f}=this;
-    const c=dt/dx;
+    const c=dt/dx, damping=Math.exp(-dt*.25);
     // Semi-Lagrangian momentum predictor. The mass update below remains conservative.
     for(let y=0;y<n;y++)for(let x=0;x<n;x++){
       const i=y*n+x, bx=x-c*su[i], bz=y-c*sv[i];
@@ -210,6 +230,11 @@ export class Simulation {
       const k=i*4,L=nb[k]<0?i:nb[k],R=nb[k+1]<0?i:nb[k+1],T=nb[k+2]<0?i:nb[k+2],B=nb[k+3]<0?i:nb[k+3];
       const gx=((H[R]+h[R]+w[R]/rho)-(H[L]+h[L]+w[L]/rho))/(2*dx);
       const gz=((H[B]+h[B]+w[B]/rho)-(H[T]+h[T]+w[T]/rho))/(2*dx);
+      // Exact static Coulomb solution for a dry, undeformed, unforced column.
+      // A wet cell or any neighbouring elastic traction always takes the full path.
+      if(p[i]===0 && w[i]===0 && su[i]===0 && sv[i]===0 && gx*gx+gz*gz<=.625*.625 &&
+         this.stress00[R]===0 && this.stress00[L]===0 && this.stress01[B]===0 && this.stress01[T]===0 &&
+         this.stress01[R]===0 && this.stress01[L]===0 && this.stress11[B]===0 && this.stress11[T]===0)continue;
       const inv=1/(Math.max(.05,h[i])*2*dx);
       let ux=this.tmpU[i]+dt*(-G*gx+((h[R]*this.stress00[R]-h[L]*this.stress00[L])+(h[B]*this.stress01[B]-h[T]*this.stress01[T]))*inv);
       let uz=this.tmpV[i]+dt*(-G*gz+((h[R]*this.stress01[R]-h[L]*this.stress01[L])+(h[B]*this.stress11[B]-h[T]*this.stress11[T]))*inv);
@@ -234,10 +259,18 @@ export class Simulation {
       const friction=.625*(1-.66*saturation);
       // A finite-depth cohesion yield augments the DP deviatoric internal stress.
       const resistance=G*friction+coh/Math.max(.35,Math.min(1.4,h[i]));
-      const speed=Math.hypot(ux,uz),factor=Math.max(0,1-dt*resistance/(speed+1e-12))*Math.exp(-dt*.25);
+      const speed=Math.hypot(ux,uz),factor=Math.max(0,1-dt*resistance/(speed+1e-12))*damping;
       su[i]=clamp(ux*factor,-5,5);sv[i]=clamp(uz*factor,-5,5);
     }
-    for(let i=0;i<N;i++){
+    // Only moving columns and their face-neighbours can exchange sand. Keep the
+    // full-grid force/yield test above; sparsity never suppresses slope failure.
+    const active=this.activeSand,mask=this.sandMask;let activeCount=0;
+    mask.fill(0);f.fill(0);
+    for(let i=0;i<N;i++)if(su[i]!==0 || sv[i]!==0){
+      if(!mask[i]){mask[i]=1;active[activeCount++]=i;}
+      for(let d=0;d<4;d++){const j=nb[i*4+d];if(j>=0 && !mask[j]){mask[j]=1;active[activeCount++]=j;}}
+    }
+    for(let ai=0;ai<activeCount;ai++){const i=active[ai];
       const k=i*4;let sum=0;
       for(let d=0;d<4;d++){
         const j=nb[k+d];let q=0;
@@ -248,24 +281,27 @@ export class Simulation {
     }
     // Conservative sand mass and mass-weighted polar attributes. Pore water is
     // entrained with the moving skeleton, in addition to its independent seepage.
-    for(let i=0;i<N;i++){
+    for(let ai=0;ai<activeCount;ai++){const i=active[ai];
       const k=i*4,hi=Math.max(h[i],1e-12);let mass=h[i],po=p[i],th=h[i]*this.theta[i],a=h[i]*this.P00[i],b=h[i]*this.P01[i],cc=h[i]*this.P11[i];
       for(let d=0;d<4;d++){
-        const j=nb[k+d],out=c*f[k+d];mass-=out;po-=out*p[i]/hi;th-=out*this.theta[i];a-=out*this.P00[i];b-=out*this.P01[i];cc-=out*this.P11[i];
-        if(j>=0){const inc=c*f[j*4+(d^1)];mass+=inc;po+=inc*p[j]/Math.max(h[j],1e-12);
+        const j=nb[k+d],out=c*f[k+d];
+        if(out!==0){mass-=out;po-=out*p[i]/hi;th-=out*this.theta[i];a-=out*this.P00[i];b-=out*this.P01[i];cc-=out*this.P11[i];}
+        if(j>=0 && f[j*4+(d^1)]!==0){const inc=c*f[j*4+(d^1)];mass+=inc;po+=inc*p[j]/Math.max(h[j],1e-12);
           // Unwrap angles relative to this column before averaging.
-          const angle=this.theta[i]+Math.atan2(Math.sin(this.theta[j]-this.theta[i]),Math.cos(this.theta[j]-this.theta[i]));
+          let delta=this.theta[j]-this.theta[i];if(delta>Math.PI)delta-=2*Math.PI;else if(delta<-Math.PI)delta+=2*Math.PI;
+          const angle=this.theta[i]+delta;
           th+=inc*angle;a+=inc*this.P00[j];b+=inc*this.P01[j];cc+=inc*this.P11[j];}
       }
       this.nextSand[i]=Math.max(0,mass);this.nextPore[i]=Math.max(0,po);
+      if(mass===h[i] && th===h[i]*this.theta[i] && a===h[i]*this.P00[i] && b===h[i]*this.P01[i] && cc===h[i]*this.P11[i]){this.nextTheta[i]=this.theta[i];this.nextP00[i]=this.P00[i];this.nextP01[i]=this.P01[i];this.nextP11[i]=this.P11[i];continue;}
       const inv=1/Math.max(1e-12,mass);this.nextTheta[i]=th*inv;this.nextP00[i]=a*inv;this.nextP01[i]=b*inv;this.nextP11[i]=cc*inv;
     }
-    h.set(this.nextSand);p.set(this.nextPore);this.theta.set(this.nextTheta);this.P00.set(this.nextP00);this.P01.set(this.nextP01);this.P11.set(this.nextP11);
-    this.constitutive(dt);
+    for(let ai=0;ai<activeCount;ai++){const i=active[ai];h[i]=this.nextSand[i];p[i]=this.nextPore[i];this.theta[i]=this.nextTheta[i];this.P00[i]=this.nextP00[i];this.P01[i]=this.nextP01[i];this.P11[i]=this.nextP11[i];}
+    this.constitutive(dt,active,activeCount);
   }
-  constitutive(dt){
+  constitutive(dt,active=null,activeCount=this.count){
     const {count:N,neighbors:nb,dx,su,sv}=this;
-    for(let i=0;i<N;i++){
+    for(let ai=0;ai<activeCount;ai++){const i=active?active[ai]:ai;
       const k=i*4,L=nb[k]<0?i:nb[k],R=nb[k+1]<0?i:nb[k+1],T=nb[k+2]<0?i:nb[k+2],B=nb[k+3]<0?i:nb[k+3];
       const ux=dt*(su[R]-su[L])/(2*dx),uz=dt*(su[B]-su[T])/(2*dx),vx=dt*(sv[R]-sv[L])/(2*dx),vz=dt*(sv[B]-sv[T])/(2*dx);
       if(ux===0 && uz===0 && vx===0 && vz===0 && this.P00[i]===1 && this.P01[i]===0 && this.P11[i]===1)continue;
@@ -317,11 +353,11 @@ export class Simulation {
     const a=this.dx*this.dx;
     return {time:this.time,surface:surface*a,pore:pore*a,sand:sand*a,sediment:sediment*a,sedimentOut:this.sedimentOut,drained:this.drained,eroded:this.eroded,deposited:this.deposited,added:this.added,maxChange,dt:this.lastDt,maxSpeed:this.maxSpeed};
   }
-  pack(target=new Float32Array(this.count*8)){
+  pack(target=new Float32Array(this.count*8),planar=false){
     for(let i=0;i<this.count;i++){
-      const k=i*8,h=this.sand[i],w=this.water[i];
+      const k=planar?i*4:i*8,t=planar?this.count*4+k:k+4,h=this.sand[i],w=this.water[i];
       target[k]=this.H[i]+h;target[k+1]=w;target[k+2]=clamp(2*this.pore[i]/Math.max(h,.001),0,1);target[k+3]=this.wet[i];
-      target[k+4]=this.u[i];target[k+5]=this.v[i];target[k+6]=this.sediment[i]/Math.max(.001,w);target[k+7]=this.H[i]+h-this.initial[i];
+      target[t+0]=this.u[i];target[t+1]=this.v[i];target[t+2]=this.sediment[i]/Math.max(.001,w);target[t+3]=this.H[i]+h-this.initial[i];
     }
     return target;
   }

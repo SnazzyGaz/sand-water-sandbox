@@ -1,3 +1,7 @@
 node_modules/
 dist/
 *.log
+
+# Local QA outputs, never published as source assets
+tests/*-qa.png
+tests/performance*.json

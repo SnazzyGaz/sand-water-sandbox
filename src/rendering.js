@@ -1,8 +1,16 @@
 import * as THREE from 'three';
+import { HDRLoader } from 'three/addons/loaders/HDRLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const common = /* glsl */`
 uniform sampler2D field;
 uniform sampler2D transport;
+uniform sampler2D surfaceLight;
+uniform sampler2D grains;
+uniform sampler2D sandColor;
+uniform sampler2D sandNormal;
+uniform sampler2D skyMap;
+uniform float skyReady;
+uniform float skyRotation;
 uniform float gridN;
 uniform float fieldSize;
 uniform float time;
@@ -34,20 +42,24 @@ vec3 diagnostic(vec4 s,vec4 f,vec3 original){
 float terrainShadow(vec3 world){
  float vis=1.;
  for(int i=1;i<=12;i++){
-  float dist=float(i)*1.15;vec3 q=world+sunDir*dist;
+  float dist=float(i)*.9;vec3 q=world+sunDir*dist;
   vec2 uv=q.xz/fieldSize+.5;
   if(uv.x>0.&&uv.y>0.&&uv.x<1.&&uv.y<1.){
    float hill=state(uv).x;
    vis=min(vis,smoothstep(-.10,.28,q.y-hill));
   }
  }
- return mix(.30,1.,vis);
+ return mix(.12,1.,vis);
+}
+vec3 skyRadiance(vec3 dir){
+ vec2 uv=vec2(fract(atan(dir.z,dir.x)/6.2831853+.5+skyRotation/6.2831853),asin(clamp(dir.y,-1.,1.))/3.14159265+.5);
+ return texture2D(skyMap,uv).rgb;
 }
 vec3 drawBrush(vec3 col){float dist=length(vWorld.xz-brush.xy);float width=.045;float ring=1.-smoothstep(width,width*2.,abs(dist-brush.z));float center=(1.-smoothstep(.04,.08,dist))*.5;return mix(col,brushColor,(ring*.8+center)*brushVisible);}
 `;
 const terrainVertex=/* glsl */`
 ${common}
-void main(){vUv=uv;vec3 p=position;p.y=state(uv).x;vWorld=(modelMatrix*vec4(p,1.)).xyz;vHeightNormal=heightNormal(uv,false);vShadow=terrainShadow(vWorld);gl_Position=projectionMatrix*viewMatrix*vec4(vWorld,1.);}
+void main(){vUv=uv;vec3 p=position;p.y=state(uv).x;vWorld=(modelMatrix*vec4(p,1.)).xyz;gl_Position=projectionMatrix*viewMatrix*vec4(vWorld,1.);}
 `;
 const terrainFragment=/* glsl */`
 ${common}
@@ -59,28 +71,33 @@ float ggx(vec3 N,vec3 L,vec3 V,float rough){
  float F=.035+.965*pow(1.-VoH,5.);return D*geom*F/(4.*NoV*NoL);
 }
 void main(){
- vec4 s=state(vUv),f=flow(vUv);vec3 N=normalize(vHeightNormal),V=normalize(cameraPosition-vWorld);
- float wet=clamp(max(s.w,s.z),0.,1.);
- float grain=noise(vWorld.xz*95.);float grainFade=1.-smoothstep(.2,1.5,length(fwidth(vWorld.xz*95.)));
- float rip=sin(vWorld.x*.95+sin(vWorld.z*.31)*1.8+sin(vWorld.x*.18)*1.4);
- float detail=(noise(vWorld.xz*1.5)-.5)*.10+(grain-.5)*.10*grainFade;
- vec3 albedo=mix(vec3(.69,.53,.32),vec3(.255,.202,.133),wet*.92);
- albedo*=1.+detail+(.025*rip)*(1.-wet);
- float fine=hash(floor(vWorld.xz*110.));
- N=normalize(N+vec3((noise(vWorld.xz*38.)-.5),0.,(noise(vWorld.xz*38.+19.)-.5))*.13*grainFade);
- vec3 L=normalize(sunDir);float NoL=max(dot(N,L),0.);float sh=vShadow;
- // Broad rough diffuse + microfacet reflection, damp sand has narrower highlights.
- float rough=mix(.92,.29,wet);
- vec3 diffuse=albedo*(vec3(.34,.42,.46)*(.72+.28*N.y)+vec3(1.12,.95,.68)*NoL*sh);
+ vec4 s=state(vUv),f=flow(vUv),lit=texture2D(surfaceLight,texUV(vUv));
+ vec3 N=normalize(lit.xyz*2.-1.),V=normalize(cameraPosition-vWorld);
+ float wet=clamp(max(s.w,s.z*.85),0.,1.);
+ vec4 grit=texture2D(grains,vWorld.xz*.5);
+ vec4 fineGrit=texture2D(grains,vWorld.xz*2.13+vec2(.19,.37));
+ float macro=noise(vWorld.xz*.35),meso=noise(vWorld.xz*3.7);
+ float ripple=sin(vWorld.x*6.+sin(vWorld.z*.48)*2.)*.5+.5;
+ float flatness=smoothstep(.55,.98,N.y);
+ vec3 dry=texture2D(sandColor,vWorld.xz/1.5).rgb*(.85+.25*macro);
+ vec3 albedo=mix(dry,dry*vec3(.27,.30,.32),pow(wet,.65));
+ albedo*=.88+.14*grit.r+.09*meso+.025*ripple*flatness*(1.-wet);
+ // Mipmapped grain normals retain millimetre detail nearby without sparkling
+ // aliasing in the overview. Wet grains smooth down under the surface film.
+ vec2 bump=(texture2D(sandNormal,vWorld.xz/1.5).rg*2.-1.)*.85+(grit.gb*2.-1.)*.15+(fineGrit.gb*2.-1.)*.10;
+ N=normalize(N+vec3(bump.x,0.,bump.y)*mix(1.,.32,wet));
+ vec3 L=normalize(sunDir);float NoL=max(dot(N,L),0.),sh=lit.a;
+ float rough=mix(.86,.20,pow(wet,.7));
+ vec3 ambient=mix(vec3(.10,.105,.095),vec3(.24,.31,.40),N.y*.5+.5);
+ vec3 diffuse=albedo*(ambient+vec3(1.52,1.30,1.03)*NoL*sh);
  float spec=ggx(N,L,V,rough)*NoL*sh;
  float grazing=pow(1.-max(dot(N,V),0.),3.);
  vec3 halfDir=normalize(L+V);
- vec3 gn=normalize(N+vec3(hash(floor(vWorld.xz*110.)+3.)-.5,.1,hash(floor(vWorld.xz*110.)+8.)-.5)*.7);
- float glitter=pow(max(dot(gn,halfDir),0.),200.)*step(.88,fine)*grainFade*(.18+grazing)*sh;
- // Small-scale horizon/cavity approximation from the actual height field.
- float avg=(state(vUv+vec2(.015,0)).x+state(vUv-vec2(.015,0)).x+state(vUv+vec2(0,.015)).x+state(vUv-vec2(0,.015)).x)*.25;
- float ao=clamp(1.-(avg-s.x)*.65,.65,1.);
- vec3 col=(diffuse+vec3(1.1,.95,.74)*(spec*.8+glitter*1.3))*ao;
+ vec3 gn=normalize(N+vec3(grit.g-.5,.08,grit.b-.5)*.9);
+ float grainFade=1.-smoothstep(.25,1.2,length(fwidth(vWorld.xz*512.)));
+ float glitter=pow(max(dot(gn,halfDir),0.),160.)*smoothstep(.85,.99,grit.a)*grainFade*(.12+grazing)*sh;
+ vec3 col=diffuse+vec3(1.15,1.05,.88)*(spec+glitter*1.6);
+ col+=min(skyRadiance(reflect(-V,N)),vec3(2.))*.025*wet*skyReady;
  col=diagnostic(s,f,col);col=drawBrush(col);
  gl_FragColor=vec4(col,1.);
  #include <tonemapping_fragment>
@@ -100,30 +117,53 @@ void main(){
  if(depth<.0025)discard;
  vec3 N=heightNormal(vUv,true),V=normalize(cameraPosition-vWorld);
  float speed=length(f.xy);
- // Secondary normals only: no fabricated displacement/splashes. Moving water
- // advects the two phase-shifted ripple samples to avoid unbounded UV stretching.
- float phase=fract(time*.13),phase2=fract(time*.13+.5),blend=abs(phase*2.-1.);
- vec2 p=vWorld.xz*2.;vec2 a=p-f.xy*phase*.7,b=p-f.xy*phase2*.7;
- vec2 ripple=mix(vec2(sin(a.x*2.3+a.y*.8),cos(a.y*2.7-a.x*.5)),vec2(sin(b.x*2.3+b.y*.8),cos(b.y*2.7-b.x*.5)),blend);
- float amplitude=.012+min(.035,speed*.012);
+ // Wind/capillary normals only: no fabricated displacement or splashes.
+ // Three incommensurate directions avoid the old regular checkerboard ripple.
+ vec2 p=vWorld.xz-f.xy*min(depth,.2)*.3;
+ float w1=sin(dot(p,vec2(.92,.38))*17.3-time*1.7);
+ float w2=sin(dot(p,vec2(-.29,.96))*23.7-time*2.1);
+ float w3=sin(dot(p,vec2(.61,.79))*31.1+time*1.2);
+ vec2 ripple=vec2(.92,.38)*w1+vec2(-.29,.96)*w2*.65+vec2(.61,.79)*w3*.35;
+ float amplitude=.0035+min(.012,speed*.004);
  N=normalize(N+vec3(ripple.x,0.,ripple.y)*amplitude*smoothstep(.005,.09,depth));
  float fresnel=.0204+.9796*pow(1.-max(dot(N,V),0.),5.);
  vec3 reflected=reflect(-V,N);
- vec3 sky=mix(vec3(.39,.48,.47),vec3(.10,.23,.30),smoothstep(-.1,.8,reflected.y));
+ vec3 sky=mix(vec3(.68,.73,.76),vec3(.16,.30,.48),smoothstep(0.,.85,reflected.y));
+ sky=mix(vec3(.16,.125,.075),sky,smoothstep(-.12,.04,reflected.y));
+ sky=mix(sky,skyRadiance(reflected),skyReady);
+ // Height-field ray reflection: honours both the upper and lower pools without
+ // assuming one global reflection plane. Sky remains the miss environment.
+ for(int j=1;j<=8;j++){
+   float dist=float(j*j)*.32;vec3 q=vWorld+N*.025+reflected*dist;
+   vec2 uv=q.xz/fieldSize+.5;
+   if(uv.x<0.||uv.y<0.||uv.x>1.||uv.y>1.)break;
+   vec4 bank=state(uv);
+   if(q.y<bank.x && q.y>bank.x-1.2){
+     vec4 lighting=texture2D(surfaceLight,texUV(uv));
+     vec3 bankN=normalize(lighting.xyz*2.-1.);
+     vec3 sand=mix(vec3(.52,.38,.22),vec3(.14,.115,.075),max(bank.z,bank.w));
+     sky=sand*(vec3(.22,.28,.34)+vec3(1.52,1.30,1.03)*max(dot(bankN,sunDir),0.)*lighting.a);
+     break;
+   }
+ }
  sky+=vec3(1.1,.91,.64)*pow(max(dot(reflected,sunDir),0.),650.)*3.;
  vec2 screen=gl_FragCoord.xy/resolution;
- vec2 refractUV=clamp(screen+N.xz*min(depth,.7)*.012,vec2(.002),vec2(.998));
+ vec2 refractUV=clamp(screen+(viewMatrix*vec4(N,0.)).xy*min(depth,1.2)*.018,vec2(.002),vec2(.998));
  vec3 beneath=texture2D(background,refractUV).rgb;
- vec3 attenuation=exp(-vec3(.60,.25,.15)*depth*2.2);
+ float path=depth/max(.25,dot(N,V));
+ vec3 attenuation=exp(-vec3(.48,.22,.12)*path);
  float turbidity=clamp(f.z*9.,0.,.85);
- vec3 body=mix(vec3(.075,.245,.245),vec3(.34,.27,.14),turbidity);
+ vec3 body=mix(vec3(.055,.085,.065),vec3(.23,.16,.065),turbidity);
  vec3 transmitted=beneath*attenuation+body*(1.-attenuation);
  vec3 col=mix(transmitted,sky,clamp(fresnel,.02,.88));
  vec3 halfDir=normalize(sunDir+V);
  float spec=pow(max(dot(N,halfDir),0.),240.);
- col+=vec3(1.15,1.03,.80)*spec*.8;
+ col+=vec3(2.1,1.9,1.6)*spec*texture2D(surfaceLight,texUV(vUv)).a;
  // Thin shoreline contact, not a uniform white foam outline.
- col*=mix(.83,1.,smoothstep(.002,.07,depth));
+ col*=mix(.72,1.,smoothstep(.002,.055,depth));
+ float edge=(1.-smoothstep(.006,.035,depth))*smoothstep(.0025,.008,depth);
+ float foam=edge*smoothstep(.65,1.8,speed)*(.4+.6*noise(vWorld.xz*34.-f.xy*time));
+ col=mix(col,vec3(.65,.63,.56),foam*.4);
  if(viewMode==3)col=mix(vec3(.09,.48,.55),vec3(.96,.59,.14),smoothstep(.2,3.5,speed));
  col=drawBrush(col);
  gl_FragColor=vec4(col,smoothstep(.0025,.035,depth)*.97);
@@ -135,8 +175,12 @@ export class SandboxRenderer {
   constructor(canvas,n=192,size=60){
     this.n=n;this.size=size;
     this.renderer=new THREE.WebGLRenderer({canvas,antialias:true,powerPreference:'high-performance'});
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio,1.65));
-    this.renderer.toneMapping=THREE.ACESFilmicToneMapping;this.renderer.toneMappingExposure=1.15;
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+    const gl=this.renderer.getContext(), info=gl.getExtension('WEBGL_debug_renderer_info');
+    this.gpuName=info?gl.getParameter(info.UNMASKED_RENDERER_WEBGL):'WebGL2';
+    this.software=/swiftshader|llvmpipe|software/i.test(this.gpuName);
+    this.renderMs=0;this.renderGpuMs=null;this.timerExtension=gl.getExtension('EXT_disjoint_timer_query_webgl2');this.gpuQuery=null;
+    this.renderer.toneMapping=THREE.ACESFilmicToneMapping;this.renderer.toneMappingExposure=.90;
     this.renderer.outputColorSpace=THREE.SRGBColorSpace;
     this.scene=new THREE.Scene();this.scene.background=new THREE.Color('#263633');
     this.camera=new THREE.PerspectiveCamera(42,innerWidth/innerHeight,.2,350);
@@ -150,7 +194,36 @@ export class SandboxRenderer {
     this.data=new Float32Array(n*n*4);this.flowData=new Float32Array(n*n*4);this.raw=null;
     const texture=(a)=>{let t=new THREE.DataTexture(a,n,n,THREE.RGBAFormat,THREE.FloatType);t.minFilter=t.magFilter=THREE.LinearFilter;t.generateMipmaps=false;t.needsUpdate=true;return t;};
     this.field=texture(this.data);this.transport=texture(this.flowData);
-    this.uniforms={field:{value:this.field},transport:{value:this.transport},gridN:{value:n},fieldSize:{value:size},time:{value:0},viewMode:{value:0},sunDir:{value:new THREE.Vector3(-.6,.72,-.35).normalize()},brush:{value:new THREE.Vector3(0,0,2.4)},brushColor:{value:new THREE.Color('#daefb5')},brushVisible:{value:0}};
+    this.grainTexture=this.makeGrains();
+    const loader=new THREE.TextureLoader(),asset=path=>`${import.meta.env.BASE_URL}textures/${path}`;
+    const repeat=(path,color=false)=>{const t=loader.load(asset(path));t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=Math.min(8,this.renderer.capabilities.getMaxAnisotropy());if(color)t.colorSpace=THREE.SRGBColorSpace;return t;};
+    this.sandColor=repeat('sand-color.jpg',true);this.sandNormal=repeat('sand-normal.jpg');
+    this.lightTarget=new THREE.WebGLRenderTarget(n,n,{type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,depthBuffer:false});
+    this.lightDirty=true;
+    this.uniforms={sandColor:{value:this.sandColor},sandNormal:{value:this.sandNormal},skyMap:{value:this.grainTexture},skyReady:{value:0},skyRotation:{value:0},surfaceLight:{value:this.lightTarget.texture},grains:{value:this.grainTexture},field:{value:this.field},transport:{value:this.transport},gridN:{value:n},fieldSize:{value:size},time:{value:0},viewMode:{value:0},sunDir:{value:new THREE.Vector3(-.76,.52,-.38).normalize()},brush:{value:new THREE.Vector3(0,0,2.4)},brushColor:{value:new THREE.Color('#daefb5')},brushVisible:{value:0}};
+    new HDRLoader().load(asset('quarry-sky.hdr'),t=>{
+      t.wrapS=THREE.RepeatWrapping;t.magFilter=THREE.LinearFilter;t.minFilter=THREE.LinearFilter;
+      this.uniforms.skyMap.value=t;this.uniforms.skyReady.value=1;
+      // Match the direct light to the photographed sun, rather than introducing
+      // a second, contradictory source in pool reflections.
+      const {data,width,height}=t.image;let best=-1,index=0;
+      for(let i=0;i<width*height/2;i++){
+        const luminance=THREE.DataUtils.fromHalfFloat(data[i*4])+THREE.DataUtils.fromHalfFloat(data[i*4+1])+THREE.DataUtils.fromHalfFloat(data[i*4+2]);
+        if(luminance>best){best=luminance;index=i;}
+      }
+      const elevation=(.5-((index/width|0)+.5)/height)*Math.PI;
+      const azimuth=Math.atan2(-.38,-.76),phi=((index%width+.5)/width-.5)*2*Math.PI;
+      this.uniforms.skyRotation.value=phi-azimuth;
+      this.uniforms.sunDir.value.set(Math.cos(azimuth)*Math.cos(elevation),Math.sin(elevation),Math.sin(azimuth)*Math.cos(elevation));
+      this.lightDirty=true;
+    });
+    this.lightScene=new THREE.Scene();this.lightCamera=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+    this.lightScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),new THREE.ShaderMaterial({
+      uniforms:this.uniforms,toneMapped:false,
+      vertexShader:'varying vec2 vUv;varying vec3 vWorld;void main(){vUv=uv;vWorld=vec3(0.);gl_Position=vec4(position.xy,0.,1.);}',
+      fragmentShader:`${common}
+      void main(){vec2 uv=(vUv*gridN-.5)/(gridN-1.);vec3 N=heightNormal(uv,false);vec3 w=vec3((uv.x-.5)*fieldSize,state(uv).x,(uv.y-.5)*fieldSize);gl_FragColor=vec4(N*.5+.5,terrainShadow(w));}`
+    })));
     const geo=this.makeGrid(n,size);
     this.terrain=new THREE.Mesh(geo,new THREE.ShaderMaterial({uniforms:this.uniforms,vertexShader:terrainVertex,fragmentShader:terrainFragment}));
     this.terrain.frustumCulled=false;this.scene.add(this.terrain);
@@ -178,6 +251,22 @@ export class SandboxRenderer {
     const lg=new THREE.BufferGeometry();lg.setAttribute('position',new THREE.Float32BufferAttribute(lines,3));this.scene.add(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0x7c8d74,transparent:true,opacity:.45})));
     this.resize();
   }
+  makeGrains(){
+    // Deterministic, original seamless grain microtexture. No external assets.
+    const n=1024,a=new Uint8Array(n*n*4),height=new Float32Array(n*n);let seed=789234;
+    const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)|0;return (seed>>>0)/4294967296;};
+    for(let i=0;i<n*n;i++)height[i]=random();
+    for(let y=0;y<n;y++)for(let x=0;x<n;x++){
+      const i=y*n+x,k=i*4,h=height[i];
+      a[k]=Math.round(105+145*h);
+      a[k+1]=Math.round(128+100*(height[y*n+(x+1)%n]-height[y*n+(x+n-1)%n]));
+      a[k+2]=Math.round(128+100*(height[((y+1)%n)*n+x]-height[((y+n-1)%n)*n+x]));
+      a[k+3]=Math.round(255*random());
+    }
+    const t=new THREE.DataTexture(a,n,n);t.wrapS=t.wrapT=THREE.RepeatWrapping;
+    t.magFilter=THREE.LinearFilter;t.minFilter=THREE.LinearMipmapLinearFilter;t.generateMipmaps=true;
+    t.anisotropy=Math.min(8,this.renderer.capabilities.getMaxAnisotropy());t.needsUpdate=true;return t;
+  }
   makeGrid(n,size){
     const geo=new THREE.BufferGeometry(),p=new Float32Array(n*n*3),uv=new Float32Array(n*n*2),idx=new Uint32Array((n-1)*(n-1)*6);let k=0;
     for(let y=0;y<n;y++)for(let x=0;x<n;x++){const i=y*n+x;p[i*3]=x/(n-1)*size-size/2;p[i*3+2]=y/(n-1)*size-size/2;uv[i*2]=x/(n-1);uv[i*2+1]=y/(n-1);if(x<n-1 && y<n-1){idx[k++]=i;idx[k++]=i+n;idx[k++]=i+1;idx[k++]=i+1;idx[k++]=i+n;idx[k++]=i+n+1;}}
@@ -192,8 +281,9 @@ export class SandboxRenderer {
     const mesh=new THREE.Mesh(geo,material);mesh.frustumCulled=false;this.scene.add(mesh);
   }
   update(packed){
-    for(let i=0;i<this.n*this.n;i++){const a=i*8,b=i*4;for(let c=0;c<4;c++){this.data[b+c]=packed[a+c];this.flowData[b+c]=packed[a+c+4];}}
-    this.field.needsUpdate=true;this.transport.needsUpdate=true;
+    this.data.set(packed.subarray(0,this.data.length));
+    this.flowData.set(packed.subarray(this.data.length));
+    this.field.needsUpdate=true;this.transport.needsUpdate=true;this.lightDirty=true;
     let k=0;const n=this.n;
     for(let y=0;y<n-1;y++)for(let x=0;x<n-1;x++){
       const i=y*n+x;if(Math.max(this.data[i*4+1],this.data[(i+1)*4+1],this.data[(i+n)*4+1],this.data[(i+n+1)*4+1])<.002)continue;
@@ -201,19 +291,29 @@ export class SandboxRenderer {
     }
     this.water.geometry.index.needsUpdate=true;this.water.geometry.setDrawRange(0,k);
   }
-  frameScene(){this.camera.position.set(52,49,66);this.controls.target.set(2,2,-1);this.controls.update();}
+  frameScene(){this.camera.position.set(16,34,22);this.controls.target.set(0,2,0);this.controls.update();}
   resize(){
+    this.renderer.setPixelRatio(Math.min(devicePixelRatio,2));
     this.renderer.setSize(innerWidth,innerHeight);this.camera.aspect=innerWidth/innerHeight;this.camera.updateProjectionMatrix();
     const v=new THREE.Vector2();this.renderer.getDrawingBufferSize(v);this.target.setSize(v.x,v.y);this.waterUniforms.resolution.value.copy(v);
   }
   render(time){
+    const started=performance.now(),gl=this.renderer.getContext(),ext=this.timerExtension;
+    if(this.gpuQuery && gl.getQueryParameter(this.gpuQuery,gl.QUERY_RESULT_AVAILABLE)){
+      if(!gl.getParameter(ext.GPU_DISJOINT_EXT))this.renderGpuMs=gl.getQueryParameter(this.gpuQuery,gl.QUERY_RESULT)/1e6;
+      gl.deleteQuery(this.gpuQuery);this.gpuQuery=null;
+    }
+    let query=null;if(ext && !this.gpuQuery){query=gl.createQuery();gl.beginQuery(ext.TIME_ELAPSED_EXT,query);}
     this.uniforms.time.value=time;this.controls.update();
     // Clamp panning to the field, keeping navigation recoverable with F.
     this.controls.target.x=THREE.MathUtils.clamp(this.controls.target.x,-38,38);this.controls.target.z=THREE.MathUtils.clamp(this.controls.target.z,-38,38);
     const waterVisible=this.uniforms.viewMode.value===0||this.uniforms.viewMode.value===3;
+    if(this.lightDirty){this.renderer.setRenderTarget(this.lightTarget);this.renderer.render(this.lightScene,this.lightCamera);this.lightDirty=false;}
     this.renderer.setRenderTarget(this.target);this.renderer.render(this.scene,this.camera);
     this.renderer.setRenderTarget(null);this.renderer.render(this.copyScene,this.copyCamera);
     if(waterVisible){this.renderer.autoClear=false;this.renderer.render(this.waterScene,this.camera);this.renderer.autoClear=true;}
+    if(query){gl.endQuery(ext.TIME_ELAPSED_EXT);this.gpuQuery=query;}
+    this.renderMs=performance.now()-started;
   }
   // CPU ray/heightfield intersection: picking exactly follows the displaced
   // surface instead of raycasting the undeformed GPU mesh or a flat y=0 plane.

@@ -9,7 +9,8 @@
     "preview": "vite preview --host 0.0.0.0",
     "test": "node --test tests/*.test.js",
     "benchmark": "node tests/benchmark.js",
-    "test:browser": "node tests/browser-smoke.js"
+    "test:browser": "node tests/browser-smoke.js",
+    "test:performance": "node tests/browser-performance.js"
   },
   "dependencies": {
     "three": "^0.181.0"

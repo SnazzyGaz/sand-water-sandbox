@@ -59,3 +59,23 @@ test('a lake at rest on a non-flat bed stays at rest',()=>{
   const old=s.water.slice();for(let k=0;k<200;k++)s.surfaceFlow(.01);
   let max=0;for(let i=0;i<s.count;i++)max=Math.max(max,Math.abs(s.water[i]-old[i]));assert.ok(max<.0001,`lake drift ${max}`);
 });
+
+test('planar transferable snapshots carry the same eight physical channels',()=>{
+  const s=new Simulation(24,16);s.largePour(0,0);s.step();
+  const interleaved=s.pack(),planar=s.pack(new Float32Array(s.count*8),true);
+  for(let i=0;i<s.count;i++)for(let c=0;c<8;c++)assert.equal(planar[c<4?i*4+c:s.count*4+i*4+c-4],interleaved[i*8+c]);
+});
+test('sparse sand transport discovers a new sculpted failure and conserves entrained pore water',()=>{
+  const s=quiet(new Simulation(32,12,false));s.sand.fill(1);s.pore.fill(.04);
+  s.applyBrush(0,0,1.8,3,'raise');const sand=sum(s.sand),pore=sum(s.pore),peak=Math.max(...s.sand);
+  for(let k=0;k<120;k++)s.sandStep(.003);
+  close(sum(s.sand),sand,.001);close(sum(s.pore),pore,.0001);
+  assert.ok(Math.max(...s.sand)<peak-.01,'newly steep columns must not be skipped');
+  assert.ok(s.P00.every(Number.isFinite));assert.ok(s.stress00.every(Number.isFinite));
+});
+test('below-yield stationary dry columns retain exact identity deformation',()=>{
+  const s=quiet(new Simulation(24,12,false));
+  for(let y=0;y<s.n;y++)for(let x=0;x<s.n;x++)s.sand[y*s.n+x]=1+x*s.dx*.3;
+  const initial=s.sand.slice();for(let k=0;k<60;k++)s.sandStep(.005);
+  assert.deepEqual(s.sand,initial);assert.ok(s.P00.every(x=>x===1));assert.ok(s.P11.every(x=>x===1));assert.ok(s.su.every(x=>x===0));
+});
