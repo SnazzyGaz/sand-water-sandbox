@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="theme-color" content="#171e20"><link rel="icon" href="data:,"><title>Sand / Water — a coupled field study</title>  <script type="module" crossorigin src="/sand-water-sandbox/assets/index-UMfjkgsd.js"></script>
+  <link rel="modulepreload" crossorigin href="/sand-water-sandbox/assets/three-core-CDxP1puG.js">
+  <link rel="modulepreload" crossorigin href="/sand-water-sandbox/assets/three-controls-RcapDe_y.js">
+  <link rel="stylesheet" crossorigin href="/sand-water-sandbox/assets/index-DrTJbKUZ.css">
+</head>
+<body>
+<canvas id="scene" aria-label="Interactive sand and water quarry. Left drag to sculpt or pour; right drag to orbit; middle drag to pan; wheel to zoom."></canvas>
+<header><span class="eyebrow">FIELD STUDY / 001</span><h1>Sand <i>/</i> Water</h1><p>A sandbox of a sandbox.</p></header>
+<div id="status"><span class="live-dot"></span><span id="live">COUPLED SIMULATION</span><small id="performance">192 × 192 · CPU worker</small></div>
+<aside id="panel" aria-label="Sandbox tools">
+  <div class="section-label">01 <span>SHAPE THE FIELD</span><button id="collapse" aria-label="Collapse tools">−</button></div>
+  <div id="tools-body">
+  <div class="modes" role="group" aria-label="Brush mode">
+    <button class="mode active" data-mode="raise"><b>↟</b>Raise<kbd>1</kbd></button>
+    <button class="mode" data-mode="lower"><b>↡</b>Lower<kbd>2</kbd></button>
+    <button class="mode" data-mode="water"><b>＋</b>Pour<kbd>3</kbd></button>
+    <button class="mode" data-mode="drain"><b>−</b>Remove<kbd>4</kbd></button>
+  </div>
+  <label class="slider-label" for="radius">Brush radius <output id="radius-value">2.4 m</output></label><input id="radius" type="range" min="0.6" max="7" step="0.1" value="2.4">
+  <label class="slider-label" for="strength">Brush strength <output id="strength-value">60%</output></label><input id="strength" type="range" min="10" max="100" value="60">
+  <div class="section-label divided">02 <span>LET IT MOVE</span></div>
+  <div class="actions"><button id="flood">Large pour <span>+45 m³</span></button><button id="pause">Pause <kbd>Space</kbd></button></div>
+  <label class="toggle"><input id="spring" type="checkbox" checked><span>Quarry spring</span><small>steady inflow</small></label>
+  <label class="toggle"><input id="underdrain" type="checkbox" checked><span>Permeable bed</span><small>underdrain</small></label>
+  <label class="slider-label" for="erosion">Erodibility <output id="erosion-value">1.0×</output></label><input id="erosion" type="range" min="0" max="2" step="0.1" value="1">
+  <div class="view-row"><span>View</span><select id="view" aria-label="Visualization"><option value="0">Physical materials</option><option value="1">Pore saturation</option><option value="2">Erosion / deposition</option><option value="3">Flow speed</option></select></div>
+  <div id="view-key">Light sand → damp → dark saturated banks</div>
+  <div class="actions bottom-actions"><button id="reset">Reset quarry <kbd>R</kbd></button><button id="camera">Frame scene <kbd>F</kbd></button></div>
+  </div>
+</aside>
+<div id="probe"><span id="probe-state">DRY SAND</span><span id="probe-values">Point at the field to inspect a column</span></div>
+<footer><div class="legend"><span><b>LMB</b> <span id="mode-label">raise sand</span></span><span><b>RMB</b> orbit</span><span><b>MMB</b> pan</span><span><b>Scroll</b> zoom</span><span><b>[ ]</b> brush</span><span><b>Shift</b> invert</span></div><div class="metrics"><span>Surface <b id="water-stat">—</b></span><span>Pore <b id="pore-stat">—</b></span><span>Drained <b id="drained-stat">—</b></span><span>Moved sand <b id="eroded-stat">—</b></span></div><div class="fine">2.5D height fields · no overhangs, splashes or breaking waves <a href="https://x.com/_mintydoge" target="_blank" rel="noopener">Garyck Arntzen / @_mintydoge</a></div></footer>
+<div id="intro"><span>AN INLAND QUARRY, IN MOTION</span><p>The spring feeds a perched basin. Watch its sandy lip erode, seep and slump — or carve a new route.</p><button id="dismiss">Make your mark ↗</button></div>
+<div id="error" hidden></div>
+</body></html>
