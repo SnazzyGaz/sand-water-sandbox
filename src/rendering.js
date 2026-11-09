@@ -61,8 +61,58 @@ const terrainVertex=/* glsl */`
 ${common}
 void main(){vUv=uv;vec3 p=position;p.y=state(uv).x;vWorld=(modelMatrix*vec4(p,1.)).xyz;gl_Position=projectionMatrix*viewMatrix*vec4(vWorld,1.);}
 `;
+// Three-fetch stochastic hex tiling (triangular lattice / dual hex cells).
+// Each lattice vertex owns a stable photo transform; zero edge weights make
+// adjacent triangles agree. No extra pass, no texture resizing or UV animation.
+export const sandSamplingShader=/* glsl */`
+vec2 sandHash(vec2 cell){
+ return fract(sin(vec2(dot(cell,vec2(127.1,311.7)),dot(cell,vec2(269.5,183.3))))*43758.5453);
+}
+void sandPatch(vec2 p,vec2 dx,vec2 dy,vec2 cell,out vec3 color,out vec2 slope){
+ vec2 seed=sandHash(cell);
+ float angle=seed.x*6.2831853,c=cos(angle),s=sin(angle);
+ mat2 rotation=mat2(c,s,-s,c);
+ float scale=mix(.92,1.08,seed.y);
+ vec2 uv=rotation*p*scale+seed*17.13;
+ // Explicit, transformed gradients exclude discontinuous cell IDs from LOD:
+ // otherwise mip selection blurs the grain along triangle boundaries.
+ color=textureGrad(sandColor,uv,rotation*dx*scale,rotation*dy*scale).rgb;
+ vec3 normal=textureGrad(sandNormal,uv,rotation*dx*scale,rotation*dy*scale).xyz*2.-1.;
+ // Blend surface slopes, not unit normals. Inverse rotation brings the sampled
+ // tangent normal back to world XZ, matching the rotated albedo exactly.
+ vec2 localSlope=normal.xy/max(normal.z,.25);
+ slope=vec2(dot(rotation[0],localSlope),dot(rotation[1],localSlope))*scale;
+}
+void sampleSand(vec2 world,out vec3 color,out vec2 slope){
+ vec2 p=world/1.5,dx=dFdx(p),dy=dFdy(p);
+ // Equilateral lattice, at roughly one photographic tile per hex cell.
+ vec2 lattice=vec2(p.x-p.y*.5773502692,p.y*1.1547005384);
+ vec2 cell=floor(lattice),f=fract(lattice);
+ vec2 a,b,c;vec3 weights;
+ if(f.x+f.y<1.){
+  a=cell;b=cell+vec2(1.,0.);c=cell+vec2(0.,1.);
+  weights=vec3(1.-f.x-f.y,f.x,f.y);
+ }else{
+  a=cell+vec2(1.);b=cell+vec2(0.,1.);c=cell+vec2(1.,0.);
+  weights=vec3(f.x+f.y-1.,1.-f.x,1.-f.y);
+ }
+ // Smooth, sharpened weights keep most of each patch photographic, rather
+ // than washing three samples into mud. Soft transitions avoid visible hex outlines.
+ weights=weights*weights*weights;weights/=dot(weights,vec3(1.));
+ vec3 ca,cb,cc;vec2 na,nb,nc;
+ sandPatch(p,dx,dy,a,ca,na);sandPatch(p,dx,dy,b,cb,nb);sandPatch(p,dx,dy,c,cc,nc);
+ color=ca*weights.x+cb*weights.y+cc*weights.z;
+ float varianceGain=inversesqrt(dot(weights,weights));
+ // Approximate variance preservation in the blend zones, bounded to avoid
+ // over-contrast. The mean is the linear-light mean of the sand photograph.
+ const vec3 meanSand=vec3(.381,.305,.161);
+ color=max(vec3(0.),meanSand+(color-meanSand)*mix(1.,varianceGain,.65));
+ slope=(na*weights.x+nb*weights.y+nc*weights.z)*varianceGain;
+}
+`;
 const terrainFragment=/* glsl */`
 ${common}
+${sandSamplingShader}
 const float PI=3.14159265;
 float ggx(vec3 N,vec3 L,vec3 V,float rough){
  vec3 H=normalize(L+V);float NoH=max(dot(N,H),0.),NoV=max(dot(N,V),.001),NoL=max(dot(N,L),.001),VoH=max(dot(V,H),0.);
@@ -79,13 +129,19 @@ void main(){
  float macro=noise(vWorld.xz*.35),meso=noise(vWorld.xz*3.7);
  float ripple=sin(vWorld.x*6.+sin(vWorld.z*.48)*2.)*.5+.5;
  float flatness=smoothstep(.55,.98,N.y);
- vec3 dry=texture2D(sandColor,vWorld.xz/1.5).rgb*(.85+.25*macro);
+ vec3 photo;vec2 photoSlope;sampleSand(vWorld.xz,photo,photoSlope);
+ // Broad non-periodic tint plus a separate, incommensurate micro-grain scale.
+ // Keep variation subtle: the photograph, not procedural noise, supplies detail.
+ vec3 dry=photo*(.92+.16*macro)*mix(vec3(.97,1.,1.025),vec3(1.025,1.,.97),noise(vWorld.xz*.13));
  vec3 albedo=mix(dry,dry*vec3(.27,.30,.32),pow(wet,.65));
  albedo*=.88+.14*grit.r+.09*meso+.025*ripple*flatness*(1.-wet);
  // Mipmapped grain normals retain millimetre detail nearby without sparkling
  // aliasing in the overview. Wet grains smooth down under the surface film.
- vec2 bump=(texture2D(sandNormal,vWorld.xz/1.5).rg*2.-1.)*.85+(grit.gb*2.-1.)*.15+(fineGrit.gb*2.-1.)*.10;
- N=normalize(N+vec3(bump.x,0.,bump.y)*mix(1.,.32,wet));
+ vec2 bump=photoSlope*.85+(grit.gb*2.-1.)*.15+(fineGrit.gb*2.-1.)*.10;
+ // Reorient the detail to the actual bank normal, then renormalize once.
+ vec3 tangent=normalize(vec3(N.y,-N.x,0.));
+ vec3 bitangent=cross(tangent,N);
+ N=normalize(N+(tangent*bump.x+bitangent*bump.y)*mix(1.,.32,wet));
  vec3 L=normalize(sunDir);float NoL=max(dot(N,L),0.),sh=lit.a;
  float rough=mix(.86,.20,pow(wet,.7));
  vec3 ambient=mix(vec3(.10,.105,.095),vec3(.24,.31,.40),N.y*.5+.5);

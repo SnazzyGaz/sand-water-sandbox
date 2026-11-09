@@ -151,3 +151,19 @@ vite.config.js             separate cached Three.js / navigation chunks
 10. **Gao et al. (2018), _Animating Fluid Sediment Mixture in Particle-Laden Flows_.** [DOI 10.1145/3197517.3201309](https://doi.org/10.1145/3197517.3201309), [author PDF](https://mingg13.github.io/papers/2018_Fluid_Sediment.pdf). Publication abstract / indexed paper sections were consulted as context for reciprocal fluid–sediment coupling and the limitations of scalar suspended sediment. No MPM, locally averaged Navier–Stokes or multigrid solver is claimed.
 11. **Edwards (2013), _Sand Rendering in Journey_, GDC.** [Talk listing](https://gdcvault.com/play/1017742/Sand-Rendering-in), supplemented by **Alan Zucconi (2019), _Journey Sand Shader: Glitter Reflection_**, [article](https://www.alanzucconi.com/2019/10/08/journey-sand-shader-5/). Procedural grain variation, broad specular and sparse view-dependent glints. New GLSL; no article shader copied.
 12. **Three.js documentation**: [ShaderMaterial](https://threejs.org/docs/#api/en/materials/ShaderMaterial), [OrbitControls](https://threejs.org/docs/#examples/en/controls/OrbitControls). Rendering API / navigation reference. Three.js and Vite are normal npm dependencies under their respective licenses.
+
+### Non-repeating sand material
+
+The photographic sand keeps its original 1.5 m grain scale. The terrain shader
+uses three-sample stochastic hex tiling (the dual of an equilateral triangular
+lattice): each cell has a deterministic random rotation, offset and ±8% scale.
+Shared, sharpened barycentric weights hide cell seams; approximate variance
+preservation retains contrast through blend zones. Albedo and normal slopes use
+the same transforms, with inverse-rotated slopes and a final reoriented unit
+normal. Explicit texture gradients keep mip selection stable at cell boundaries.
+Low-frequency tint and the separate incommensurate grain overlay further break
+up repetition. Wet darkening, smoothing and water are unchanged.
+
+This trades two photo-map reads for six per terrain fragment, without adding a
+render pass or changing simulation work. GPU cost depends on hardware; the
+shader does not lower resolution to compensate.
